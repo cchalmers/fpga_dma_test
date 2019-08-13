@@ -440,17 +440,14 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 			uint64_t transfer_bytes = MIN(total_size, config->payload_size);
 			//debug_print("Transfer src=%lx, dst=%lx, bytes=%ld\n", (uint64_t)src, (uint64_t)0, transfer_bytes);
 
+			fpgaDMATransferReset(transfer);
 			fpgaDMATransferSetSrc(transfer, src);
 			fpgaDMATransferSetDst(transfer, dst);
 			fpgaDMATransferSetLen(transfer, transfer_bytes);
 			fpgaDMATransferSetTransferType(transfer, HOST_MM_TO_FPGA_MM);
 			// perform non-blocking transfers, except for the very last
-			if(tid == 1) {
-				fpgaDMATransferSetLast(transfer, true);
-				fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
-			} else {
-				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
-			}
+			fpgaDMATransferSetLast(transfer, true);
+			fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 
 			res = fpgaDMATransfer(dma_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
