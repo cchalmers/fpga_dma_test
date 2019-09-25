@@ -197,9 +197,9 @@ typedef union {
 	};
 } msgdma_desc_ctrl_t;
 
-typedef union {
-	uint32_t volatile reg;
-	volatile struct {
+typedef volatile union {
+	volatile uint32_t reg;
+	volatile __attribute__ ((__packed__)) struct {
 		uint32_t busy:1;
 		uint32_t desc_buf_empty:1;
 		uint32_t desc_buf_full:1;
@@ -214,7 +214,7 @@ typedef union {
 	} st;
 } msgdma_status_t;
 
-typedef union {
+typedef volatile union {
 	uint32_t reg;
 	struct {
 		uint32_t stop_dispatcher:1;
@@ -231,30 +231,30 @@ typedef union {
 } msgdma_ctrl_t;
 
 typedef union {
-	uint32_t reg;
-	struct {
+	volatile uint32_t reg;
+	volatile struct {
 		uint32_t rd_fill_level:16;
 		uint32_t wr_fill_level:16;
 	} fl;
 } msgdma_fill_level_t;
 
 typedef union {
-	uint32_t reg;
-	struct {
+	volatile uint32_t reg;
+	volatile struct {
 		uint32_t rsp_fill_level:16;
 		uint32_t rsvd:16;
 	} rsp;
 } msgdma_rsp_level_t;
 
 typedef union {
-	uint32_t reg;
-	struct {
+	volatile uint32_t reg;
+	volatile struct {
 		uint32_t rd_seq_num:16;
 		uint32_t wr_seq_num:16;
 	} seq;
 } msgdma_seq_num_t;
 
-typedef struct __attribute__((__packed__)) {
+typedef volatile struct __attribute__((__packed__)) {
 	// 0x0
 	msgdma_status_t status;
 	// 0x4
@@ -270,34 +270,34 @@ typedef struct __attribute__((__packed__)) {
 // Hardware descriptor
 typedef struct __attribute__((__packed__)) {
 	// word 0
-	uint8_t format;
-	uint8_t block_size;
+	volatile uint8_t format;
+	volatile uint8_t block_size;
 	volatile uint8_t owned_by_hw;
-	uint8_t rsvd1;	
-	msgdma_desc_ctrl_t ctrl;
+	volatile uint8_t rsvd1;
+	volatile msgdma_desc_ctrl_t ctrl;
 	// word 1
-	uint64_t src;
+	volatile uint64_t src;
 	// word 2
-	uint64_t dst;
+	volatile uint64_t dst;
 	// word 3
-	uint32_t len;
-	uint32_t rsvd2;
+	volatile uint32_t len;
+	volatile uint32_t rsvd2;
 	// word 4
-	uint16_t seq_num;
-	uint8_t rd_burst;
-	uint8_t wr_burst;
-	uint16_t rd_stride;
-	uint16_t wr_stride;
+	volatile uint16_t seq_num;
+	volatile uint8_t rd_burst;
+	volatile uint8_t wr_burst;
+	volatile uint16_t rd_stride;
+	volatile uint16_t wr_stride;
 	// word 5
 	volatile uint32_t bytes_transferred;
 	volatile uint8_t error;
 	volatile uint8_t eop_arrived;
 	volatile uint8_t early_term;
-	uint8_t rsvd3;
+	volatile uint8_t rsvd3;
 	// word 6
-	uint64_t rsvd4;
+	volatile uint64_t rsvd4;
 	// word 7
-	uint64_t next_desc;
+	volatile uint64_t next_desc;
 } msgdma_hw_desc_t;
 
 // Buffer
@@ -347,10 +347,10 @@ struct fpga_dma_handle {
 	uint64_t dma_prefetcher_base;
 	// pointer to hardware descriptor block-chain
 	msgdma_block_mem_t *block_mem;
-	concurrent_queue<struct msgdma_sw_desc*> ingress_queue;
-	concurrent_queue<struct msgdma_sw_desc*> pending_queue;	
-	concurrent_queue<struct msgdma_hw_descp*> free_desc;
-	concurrent_queue<struct msgdma_hw_descp*> invalid_desc_queue;
+	concurrent_bounded_queue<struct msgdma_sw_desc*> ingress_queue;
+	concurrent_bounded_queue<struct msgdma_sw_desc*> pending_queue;	
+	concurrent_bounded_queue<struct msgdma_hw_descp*> free_desc;
+	concurrent_bounded_queue<struct msgdma_hw_descp*> invalid_desc_queue;
 	// channel type
 	fpga_dma_channel_type_t ch_type;
         #define INVALID_CHANNEL (0x7fffffffffffffffULL)
@@ -364,7 +364,7 @@ struct fpga_dma_handle {
 };
 
 // Prefetcher ctrl register
-typedef union {
+volatile typedef union {
 	uint64_t reg;
 	struct {
 		uint64_t fetch_en:1;
@@ -378,7 +378,7 @@ typedef union {
 } msgdma_prefetcher_ctrl_t;
 
 // MSGDMA status register
-typedef union {
+volatile typedef union {
 	uint64_t volatile reg;
 	volatile struct {
 		uint64_t irq:1;
@@ -394,7 +394,7 @@ typedef union {
 } msgdma_prefetcher_status_t;
 
 // MSGDMA fill levels
-typedef union {
+volatile typedef union {
 	uint64_t reg;
 	struct {
 		uint64_t fetch_desc_watermark:16;
@@ -404,7 +404,7 @@ typedef union {
 	} fl;
 } msgdma_prefetcher_fill_level_t;
 
-typedef struct __attribute__((__packed__)) {
+typedef volatile struct __attribute__((__packed__)) {
 	msgdma_prefetcher_ctrl_t ctrl; // 0x0
 	uint64_t start_loc; // 0x8
 	uint64_t fetch_loc; // 0x10

@@ -322,6 +322,12 @@ static void assign_hw_desc(msgdma_sw_desc_t *sw_desc,
 		hw_descp->hw_desc->ctrl.generate_sop = 0;
 		hw_descp->hw_desc->ctrl.generate_eop = 0;
 	}
+
+	if (sw_desc->transfer->rx_ctrl == END_ON_EOP)
+		hw_descp->hw_desc->ctrl.end_on_eop = 1;
+	else
+		hw_descp->hw_desc->ctrl.end_on_eop = 0;
+
 	hw_descp->hw_desc->ctrl.go = 1;
 	if (set_owned_by_hw)
 		hw_descp->hw_desc->owned_by_hw = 1;
@@ -341,14 +347,26 @@ static msgdma_sw_desc* init_sw_desc(fpga_dma_transfer_t transfer) {
 	if (!sw_desc)
 		return NULL;
 
-	if (sem_init(&sw_desc->tf_status, 1, TRANSFER_PENDING)) 
+	if (sem_init(&sw_desc->tf_status, 1, TRANSFER_PENDING))
 		ON_ERR_GOTO(FPGA_EXCEPTION, out, "sem_init failed");
 
 	sw_desc->transfer = (struct fpga_dma_transfer*)calloc((size_t)1, sizeof(struct fpga_dma_transfer));
 	if (!sw_desc->transfer)
 		ON_ERR_GOTO(FPGA_EXCEPTION, out, "sw_desc transfer alloc failed");
 
- 	local_memcpy(sw_desc->transfer, transfer, sizeof(struct fpga_dma_transfer));
+	//local_memcpy(sw_desc->transfer, transfer, sizeof(struct fpga_dma_transfer));
+	sw_desc->transfer->src = transfer->src;
+	sw_desc->transfer->dst = transfer->dst;
+	sw_desc->transfer->len = transfer->len;
+	sw_desc->transfer->transfer_type = transfer->transfer_type;
+	sw_desc->transfer->tx_ctrl = transfer->tx_ctrl;
+	sw_desc->transfer->rx_ctrl = transfer->rx_ctrl;
+	sw_desc->transfer->cb = transfer->cb;
+	sw_desc->transfer->eop_arrived = transfer->eop_arrived;
+	sw_desc->transfer->context = transfer->context;
+	sw_desc->transfer->bytes_transferred = transfer->bytes_transferred;
+	sw_desc->transfer->is_last_buf = transfer->is_last_buf;
+
 	sw_desc->kill_worker = false;
 	sw_desc->last = 0;
 	return sw_desc;
@@ -379,7 +397,7 @@ static fpga_result destroy_sw_desc(msgdma_sw_desc *sw_desc) {
 static void dump_hw_desc(int i, msgdma_hw_desc_t *desc)
 {
 	debug_print("desc id = %d\n", i);
-	// word 0 
+	// word 0
 	debug_print("format = %d\n", desc->format);
 	debug_print("block size = %d\n", desc->block_size);
 	debug_print("owned by hw = %d\n", desc->owned_by_hw);
@@ -400,7 +418,7 @@ static void dump_hw_desc(int i, msgdma_hw_desc_t *desc)
 
 static void dump_hw_desc_log(int i, msgdma_hw_desc_t *desc, ofstream &f)
 {
-#if FPGA_DMA_DEBUG 
+#if FPGA_DMA_DEBUG
 	f << std::setw(10) << std::to_string(desc->format)
 	<< std::setw(10) << std::to_string(desc->block_size)
 	<< std::setw(10) << std::to_string(desc->owned_by_hw)
@@ -420,7 +438,7 @@ static void dump_hw_desc_log(int i, msgdma_hw_desc_t *desc, ofstream &f)
 //  b) the block is partially full, but application marked
 //     the current buffer as the last.
 // After ownership of a block is transferred to DMA, descriptors in
-// that block are pushed to pending queue, where they await 
+// that block are pushed to pending queue, where they await
 // transfer completion. Invalid hardware descriptors
 // in a partially full block are not used.
 static void *dispatcherWorker(void* dma_handle) {
@@ -452,9 +470,8 @@ static void *dispatcherWorker(void* dma_handle) {
 
 	debug_print("started dispatcher worker\n");
 	while (1) {
-		// wait for a valid transfer
-		while(dma_h->ingress_queue.empty());
-		if (dma_h->ingress_queue.try_pop(sw_desc[desc_count])) {
+			// wait for a valid transfer
+			dma_h->ingress_queue.pop(sw_desc[desc_count]);
 			if (sw_desc[desc_count]->kill_worker) {
 				disp_log.close();
 				dma_h->pending_queue.push(sw_desc[desc_count]);
@@ -478,11 +495,10 @@ static void *dispatcherWorker(void* dma_handle) {
 				format = 0x2;
 			else
 				format = 0x0;
-			
+
 			// assign a free hardware descriptor to this transfer
 			// if a free descriptor isn't available, wait here
-			while(dma_h->free_desc.empty());
-			dma_h->free_desc.try_pop(hw_descp);
+			dma_h->free_desc.pop(hw_descp);
 
 			sw_desc[desc_count]->id = desc_count;
 			assign_hw_desc(sw_desc[desc_count], hw_descp, is_owned_by_hw, block_size, format);
@@ -507,8 +523,7 @@ static void *dispatcherWorker(void* dma_handle) {
 				// Skip invalid descriptors
 				for(k=1; k<= (FPGA_DMA_BLOCK_SIZE-desc_count); k++) {
 					msgdma_hw_descp_t *unused_hw_descp;
-					while(dma_h->free_desc.empty());
-					dma_h->free_desc.try_pop(unused_hw_descp);
+					dma_h->free_desc.pop(unused_hw_descp);
 					dump_hw_desc_log(0, unused_hw_descp->hw_desc, disp_log);
 					dma_h->invalid_desc_queue.push(unused_hw_descp);
 				}
@@ -518,13 +533,12 @@ static void *dispatcherWorker(void* dma_handle) {
 			} else
 				desc_count++;
 		}
-	}
 
 	return dma_h;
 }
 
 // Completion worker thread
-// Poll descriptors in pending queue. When the descriptor is marked 
+// Poll descriptors in pending queue. When the descriptor is marked
 // complete in hw, return the hardware descriptor to free pool and invoke
 // callback associated with the corresponding buffer transfer
 static void *completionWorker(void* dma_handle) {
@@ -538,12 +552,20 @@ static void *completionWorker(void* dma_handle) {
 
 	debug_print("started completion worker\n");
 	while (1) {
-		while(dma_h->pending_queue.empty());
-		if (dma_h->pending_queue.try_pop(sw_desc)) {
+		dma_h->pending_queue.pop(sw_desc); {
 			if (sw_desc->kill_worker)
 				break;
+			//printf (">>>>>sw_desc->hw_descp->hw_desc_id = %08lx, sw_desc->hw_descp->hw_block_id= %08lx\n", sw_desc->hw_descp->hw_desc_id, sw_desc->hw_descp->hw_block_id);
 			while(sw_desc->hw_descp->hw_desc->owned_by_hw == 1);
+			/*{
+				printf ("sw_desc->hw_descp->hw_desc_id = %08lx, sw_desc->hw_descp->hw_block_id= %08lx\n", sw_desc->hw_descp->hw_desc_id, sw_desc->hw_descp->hw_block_id);
+                        }*/
 			sw_desc->hw_descp->hw_desc->owned_by_hw = 0;
+			/* {
+			cout << "waiting" <<endl;
+			printf ("sw_desc->hw_descp->hw_desc_id = %08lx, sw_desc->hw_descp->hw_block_id= %08lx\n", sw_desc->hw_descp->hw_desc_id, sw_desc->hw_descp->hw_block_id);
+			} */
+			//sw_desc->hw_descp->hw_desc->owned_by_hw = 0;
 
 			// return hw_descp to free pool
 			dma_h->free_desc.push(sw_desc->hw_descp);
@@ -551,7 +573,7 @@ static void *completionWorker(void* dma_handle) {
 			if(sw_desc->last == 1 && (sw_desc->hw_descp->hw_desc_id < (FPGA_DMA_BLOCK_SIZE - 1))) {
 				for(i = (sw_desc->hw_descp->hw_desc_id + 1) ; i < FPGA_DMA_BLOCK_SIZE ; i++) {
 					msgdma_hw_descp_t *unused_hw_descp;
-					dma_h->invalid_desc_queue.try_pop(unused_hw_descp);
+					dma_h->invalid_desc_queue.pop(unused_hw_descp);
 					dma_h->free_desc.push(unused_hw_descp);
 				}
 			}
@@ -559,7 +581,10 @@ static void *completionWorker(void* dma_handle) {
 			if (sw_desc->transfer->cb) {
 				fpga_dma_transfer_status_t status;
 				status.eop_arrived = sw_desc->hw_descp->hw_desc->eop_arrived;
-				status.bytes_transferred = sw_desc->hw_descp->hw_desc->bytes_transferred;
+				if(sw_desc->transfer->transfer_type == HOST_MM_TO_FPGA_MM)
+					status.bytes_transferred = sw_desc->hw_descp->hw_desc->len;
+				else
+					status.bytes_transferred = sw_desc->hw_descp->hw_desc->bytes_transferred;
 				sw_desc->transfer->cb(sw_desc->transfer->context, status);
 				destroy_sw_desc(sw_desc);
 			}
@@ -776,7 +801,7 @@ fpga_result fpgaDMAOpen(fpga_handle fpga, uint64_t dma_channel_index, fpga_dma_h
 			next_block_iova = dma_h->block_mem[0].block_iova | HOST_MEM_MASK(dma_h);
 		else
 			next_block_iova = dma_h->block_mem[i+1].block_iova | HOST_MEM_MASK(dma_h);
-		
+
 		// initalize all descriptors in block
 		memset(dma_h->block_mem[i].block_va, 0, block_size);
 		cur_block->next_desc = next_block_iova;
@@ -800,7 +825,7 @@ fpga_result fpgaDMAOpen(fpga_handle fpga, uint64_t dma_channel_index, fpga_dma_h
 
 	// Enable dispatcher
 	msgdma_ctrl_t ctrl;
-	ctrl = {0};
+	ctrl.reg = 0x0;
 	res = MMIOWrite32Blk(dma_h, CSR_CONTROL(dma_h), (uint64_t)&ctrl.reg, sizeof(ctrl.reg));
 	ON_ERR_GOTO(res, rel_buf, "MMIOWrite32Blk");
 
@@ -812,10 +837,11 @@ fpga_result fpgaDMAOpen(fpga_handle fpga, uint64_t dma_channel_index, fpga_dma_h
 
 	// Enable fetch engine
 	msgdma_prefetcher_ctrl_t prefetcher_ctrl;
-	prefetcher_ctrl = {0};
+	prefetcher_ctrl.reg = 0;
 	prefetcher_ctrl.ct.timeout_val = 0xFF;
 	prefetcher_ctrl.ct.timeout_en = 1;
-	prefetcher_ctrl.ct.fetch_en = 1;	
+	prefetcher_ctrl.ct.fetch_en = 1;
+
 	res = MMIOWrite64Blk(dma_h, PREFETCHER_CTRL(dma_h), (uint64_t)&prefetcher_ctrl.reg, sizeof(prefetcher_ctrl.reg));
 	ON_ERR_GOTO(res, rel_buf, "enabling fetch engine");
 
@@ -902,7 +928,7 @@ fpga_result fpgaDMAClose(fpga_dma_handle_t dma_h) {
 		FPGA_DMA_ERR("Attempt to close DMA channel that was not open");
 		return FPGA_INVALID_PARAM;
 	}
-	
+
 	// Mark channel as no longer in use
 	open_channels *tmp;
 	tmp = head;
@@ -955,14 +981,14 @@ fpga_result fpgaDMAClose(fpga_dma_handle_t dma_h) {
 
 	// stop dispatcher
 	msgdma_ctrl_t ctrl;
-	ctrl = {0};
+	ctrl.reg = 0;
 	ctrl.ct.stop_dispatcher = 1;
 	res = MMIOWrite32Blk(dma_h, CSR_CONTROL(dma_h), (uint64_t)&ctrl.reg, sizeof(ctrl.reg));
 
 	// Disable prefetcher frontend before freeing descriptor
 	// memory to avoid polling non-existent host buffers
 	msgdma_prefetcher_ctrl_t prefetcher_ctrl;
-	prefetcher_ctrl = {0};
+	prefetcher_ctrl.reg = 0;
 	prefetcher_ctrl.ct.timeout_val = 0xFF;
 	prefetcher_ctrl.ct.timeout_en = 0;
 	prefetcher_ctrl.ct.fetch_en = 0;
@@ -972,22 +998,19 @@ fpga_result fpgaDMAClose(fpga_dma_handle_t dma_h) {
 	// wait for prefetcher idle
 	msgdma_prefetcher_status_t pre_status;
 	do {
-		res = MMIORead32Blk(dma_h, PREFETCHER_STATUS(dma_h), (uint64_t)&pre_status.reg, sizeof(pre_status.reg));
-		ON_ERR_GOTO(res, out, "MMIORead32Blk");		
-	} while(!pre_status.st.fetch_idle);
-
-	// wait for prefetcher store idle
-	do {
-		res = MMIORead32Blk(dma_h, PREFETCHER_STATUS(dma_h), (uint64_t)&pre_status.reg, sizeof(pre_status.reg));
-		ON_ERR_GOTO(res, out, "MMIORead32Blk");		
-	} while(!pre_status.st.store_idle);
+		res = MMIORead64Blk(dma_h, PREFETCHER_STATUS(dma_h), (uint64_t)&pre_status.reg, sizeof(pre_status.reg));
+		ON_ERR_GOTO(res, out, "MMIORead32Blk");
+	} while(!(pre_status.st.fetch_idle & pre_status.st.store_idle) || // fetch and store idle must go hi
+				(pre_status.st.outstanding_fetches > 0)); // outstanding fetches must be 0
 
 	// Poll status until DMA is stopped
 	msgdma_status_t status;
+	status.reg = 0;
 	do {
 		res = MMIORead32Blk(dma_h, CSR_STATUS(dma_h), (uint64_t)&status.reg, sizeof(status.reg));
-		ON_ERR_GOTO(res, out, "MMIORead32Blk");		
+		ON_ERR_GOTO(res, out, "MMIORead32Blk");
 	} while(!status.st.stopped);
+
 
 	// Free block buffers
 	for(i=0; i<FPGA_DMA_MAX_BLOCKS; i++) {
@@ -1087,7 +1110,7 @@ fpga_result fpgaDMATransferDestroy(fpga_dma_transfer_t *transfer_p) {
 		return FPGA_INVALID_PARAM;
 	}
 	transfer = *transfer_p;
-	
+
 	if (pthread_mutex_lock(&transfer->tf_mutex)) {
 		FPGA_DMA_ERR("pthread_mutex_destroy");
 		return FPGA_EXCEPTION;
@@ -1360,7 +1383,7 @@ fpga_result fpgaDMATransfer(fpga_dma_handle_t dma, fpga_dma_transfer_t transfer)
 	}
 
 	// Avalon ST does not allow signalling of partial data for non-packet transfers (transfers without SOP/EOP).
-	if (((transfer->tx_ctrl == TX_NO_PACKET && dma->ch_type == TX_ST) || 
+	if (((transfer->tx_ctrl == TX_NO_PACKET && dma->ch_type == TX_ST) ||
 		(transfer->rx_ctrl == RX_NO_PACKET && dma->ch_type == RX_ST)) && ((transfer->len % 64) != 0)) {
 		FPGA_DMA_ERR("Incompatible transfer length for transfer type NO_PKT");
 		return FPGA_INVALID_PARAM;
@@ -1375,21 +1398,28 @@ fpga_result fpgaDMATransfer(fpga_dma_handle_t dma, fpga_dma_transfer_t transfer)
 	msgdma_sw_desc *sw_desc = init_sw_desc(transfer);
 	if (!sw_desc)
 		return FPGA_EXCEPTION;
-	dma->ingress_queue.push(sw_desc);
 
-	// Blocking transfer
-	if (!sw_desc->transfer->cb) {
-		sem_wait(&sw_desc->tf_status);
-		// copy over EOP and transferred bytes
-		transfer->eop_arrived = sw_desc->hw_descp->hw_desc->eop_arrived;
+	// determine if the transfer is synchronous/asynchronous before submitting to queue
+	bool is_blocking;
+	if (sw_desc->transfer->cb)
+		is_blocking = false;
+	else
+		is_blocking = true;
+
+	dma->ingress_queue.push(sw_desc);
+	if(!is_blocking)
+		return FPGA_OK;
+
+	// Handle blocking transfer
+	sem_wait(&sw_desc->tf_status);
+	// copy over EOP and transferred bytes
+	transfer->eop_arrived = sw_desc->hw_descp->hw_desc->eop_arrived;
+	// hardware doesn’t track the bytes transferred for memory to stream transfers, copy provided length
+	if(sw_desc->transfer->transfer_type == HOST_MM_TO_FPGA_MM)
+		transfer->bytes_transferred = sw_desc->transfer->len;
+	else
 		transfer->bytes_transferred = sw_desc->hw_descp->hw_desc->bytes_transferred;
-		return destroy_sw_desc(sw_desc);
-	}
-	if (sem_destroy(&sw_desc->tf_status)) {
-		FPGA_DMA_ERR("sem destroy failed\n");
-		return FPGA_EXCEPTION;
-	}
-	return FPGA_OK;
+	return destroy_sw_desc(sw_desc);
 }
 
 fpga_result fpgaDMAInvalidate(fpga_dma_handle_t dma) {
@@ -1401,7 +1431,7 @@ fpga_result fpgaDMAInvalidate(fpga_dma_handle_t dma) {
 
 	// stop dispatcher
 	msgdma_ctrl_t ctrl;
-	ctrl = {0};
+	ctrl.reg = 0x0;
 	ctrl.ct.stop_dispatcher = 1;
 	//TODO: wait status
 	ctrl.ct.reset_dispatcher = 1;
@@ -1418,7 +1448,7 @@ fpga_result fpgaDMAInvalidate(fpga_dma_handle_t dma) {
 	}
 
 	// reenable dispatcher
-	ctrl = {0};
+	ctrl.reg = 0x0;
 	res = MMIOWrite32Blk(dma, CSR_CONTROL(dma), (uint64_t)&ctrl.reg, sizeof(ctrl.reg));
 	return res;
 }

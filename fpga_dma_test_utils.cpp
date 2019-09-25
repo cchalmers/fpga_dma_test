@@ -46,8 +46,7 @@ static int err_cnt = 0;
 		}\
 	} while (0)
 
-
-static void transferNonBlocking(void *ctx, fpga_dma_transfer_status_t status) {
+static void transferComplete(void *ctx, fpga_dma_transfer_status_t status) {
 	return;
 }
 
@@ -299,7 +298,7 @@ static fpga_result loopback_test(fpga_handle afc_h, fpga_dma_handle_t tx_dma_h, 
 			fpgaDMATransferSetLast(transfer, true);
 		else
 			fpgaDMATransferSetLast(transfer, false);
-		fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
+		fpgaDMATransferSetTransferCallback(transfer, transferComplete, NULL);
 
 		res = fpgaDMATransfer(tx_dma_h, transfer);
 		ON_ERR_GOTO(res, free_transfer, "transfer error");
@@ -348,7 +347,7 @@ static fpga_result loopback_test(fpga_handle afc_h, fpga_dma_handle_t tx_dma_h, 
 			fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 		} else {
 			fpgaDMATransferSetLast(transfer, false);
-			fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
+			fpgaDMATransferSetTransferCallback(transfer, transferComplete, NULL);
 		}
 
 		res = fpgaDMATransfer(rx_dma_h, transfer);
@@ -384,20 +383,12 @@ out:
 
 static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h, struct config *config) {
 	fpga_dma_transfer_t transfer;
-	fpga_dma_transfer_t transfer2;
 	fpga_result res = FPGA_OK;
 	struct timespec start, end;
 	start = (struct timespec){ 0 };
 	end = (struct timespec){ 0 };
 
 	struct buf_attrs battrs = {
-		.va = NULL,
-		.iova = 0,
-		.wsid = 0,
-		.size = 0
-	};
-
-	struct buf_attrs battrs2 = {
 		.va = NULL,
 		.iova = 0,
 		.wsid = 0,
@@ -416,14 +407,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 	ON_ERR_GOTO(res, out, "allocating buffer");
 	debug_print("allocated test buffer va = %p, iova = %lx, wsid = %lx, size = %ld\n", battrs.va, battrs.iova, battrs.wsid, battrs.size);
 
-	battrs2.size = config->data_size;
-	res = allocate_buffer(afc_h, &battrs2);
-	ON_ERR_GOTO(res, out, "allocating buffer");
-	debug_print("allocated test buffer va = %p, iova = %lx, wsid = %lx, size = %ld\n", battrs2.va, battrs2.iova, battrs2.wsid, battrs2.size);
-
 	res = fpgaDMATransferInit(&transfer);
-	ON_ERR_GOTO(res, out, "allocating transfer");
-	res = fpgaDMATransferInit(&transfer2);
 	ON_ERR_GOTO(res, out, "allocating transfer");
 	debug_print("init transfer\n");
 
@@ -431,16 +415,15 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 		fill_buffer((unsigned char *)battrs.va, config->data_size);
 		debug_print("filled test buffer\n");
 
+		clock_gettime(CLOCK_MONOTONIC, &start);
 		uint64_t total_size = config->data_size;
 		int64_t tid = ceil((double)config->data_size /(double)config->payload_size);
 		uint64_t src = battrs.iova; // host memory addr
 		uint64_t dst = config->fpga_addr; // fpga memory addr
-		clock_gettime(CLOCK_MONOTONIC, &start);
 		while(total_size > 0) {
 			uint64_t transfer_bytes = MIN(total_size, config->payload_size);
 			//debug_print("Transfer src=%lx, dst=%lx, bytes=%ld\n", (uint64_t)src, (uint64_t)0, transfer_bytes);
 
-			fpgaDMATransferReset(transfer);
 			fpgaDMATransferSetSrc(transfer, src);
 			fpgaDMATransferSetDst(transfer, dst);
 			fpgaDMATransferSetLen(transfer, transfer_bytes);
@@ -457,18 +440,18 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 			tid--;
 		}
 		clock_gettime(CLOCK_MONOTONIC, &end);
-		std::cout << "Write Bandwidth = " << getBandwidth(config->data_size, getTime(start,end)) << " MB/s" << std::endl;
-
+		printf("i'm here\n");
+		//fpgaDMAInvalidate(dma_h);
 		// clear recieve buffer
 		memset(battrs.va, 0, battrs.size);
 		fpgaDMATransferReset(transfer);
 		ON_ERR_GOTO(res, free_transfer, "transfer reset error");
 
+		clock_gettime(CLOCK_MONOTONIC, &start);
 		total_size = config->data_size;
 		tid = ceil((double)config->data_size / (double)config->payload_size);
 		src = config->fpga_addr;
 		dst = battrs.iova;
-		clock_gettime(CLOCK_MONOTONIC, &start);
 		while(total_size > 0) {
 			uint64_t transfer_bytes = MIN(total_size, config->payload_size);
 
@@ -480,8 +463,10 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetLast(transfer, true);
 				fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 			} else {
-				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
+				fpgaDMATransferSetTransferCallback(transfer, transferComplete, NULL);
 			}
+			//fpgaDMATransferSetLast(transfer, true);
+                        //fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 
 			res = fpgaDMATransfer(dma_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
@@ -492,57 +477,9 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 		}
 		ON_ERR_GOTO(res, free_transfer, "transfer error");
 		clock_gettime(CLOCK_MONOTONIC, &end);
-		std::cout << "Read Bandwidth = " << getBandwidth(config->data_size, getTime(start,end)) << " MB/s" << std::endl;
 
 		res = verify_buffer((unsigned char *)battrs.va, config->data_size, 0/*decimation factor*/);
 		ON_ERR_GOTO(res, free_transfer, "buffer verify failed");
-
-		// Combined write /read
-		fpgaDMATransferReset(transfer);
-		total_size = config->data_size;
-		tid = ceil((double)config->data_size /(double)config->payload_size);
-		src = battrs.iova; // host memory addr
-		uint64_t src2 = battrs2.iova; // host memory addr
-		dst = config->fpga_addr; // fpga memory addr
-		clock_gettime(CLOCK_MONOTONIC, &start);
-		while(total_size > 0) {
-			uint64_t transfer_bytes = MIN(total_size, config->payload_size);
-			// host to fpga
-			fpgaDMATransferSetSrc(transfer, src);
-			fpgaDMATransferSetDst(transfer, dst);
-			fpgaDMATransferSetLen(transfer, transfer_bytes);
-			fpgaDMATransferSetTransferType(transfer, HOST_MM_TO_FPGA_MM);
-			//fpgaDMATransferSetTransferType(transfer, FPGA_MM_TO_HOST_MM);
-
-			// fpga to host
-			fpgaDMATransferSetSrc(transfer2, dst + (4096 << 2));
-			fpgaDMATransferSetDst(transfer2, src2);
-			fpgaDMATransferSetLen(transfer2, transfer_bytes);
-			//fpgaDMATransferSetTransferType(transfer2, HOST_MM_TO_FPGA_MM);
-			fpgaDMATransferSetTransferType(transfer2, FPGA_MM_TO_HOST_MM);
-
-			if(tid == 1) {
-				fpgaDMATransferSetLast(transfer, true);
-				fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
-				fpgaDMATransferSetLast(transfer2, true);
-				fpgaDMATransferSetTransferCallback(transfer2, NULL, NULL);
-			} else {
-				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
-				fpgaDMATransferSetTransferCallback(transfer2, transferNonBlocking, NULL);
-			}
-
-			res = fpgaDMATransfer(dma_h, transfer);
-			res = fpgaDMATransfer(dma_h, transfer2);
-			ON_ERR_GOTO(res, free_transfer, "transfer error");
-			total_size -= transfer_bytes;
-			dst += transfer_bytes;
-			src += transfer_bytes;
-			src2 += transfer_bytes;
-			tid--;
-		}
-		ON_ERR_GOTO(res, free_transfer, "transfer error");
-		clock_gettime(CLOCK_MONOTONIC, &end);
-		std::cout << "Read / write Bandwidth = " << getBandwidth(config->data_size, getTime(start,end)) << " MB/s" << std::endl;
 	}
 	if(config->direction == DMA_MTOS) {
 		fill_buffer((unsigned char *)battrs.va, config->data_size);
@@ -578,7 +515,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetLast(transfer, true);
 				fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 			} else {
-				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
+				fpgaDMATransferSetTransferCallback(transfer, transferComplete, NULL);
 			}
 
 			res = fpgaDMATransfer(dma_h, transfer);
@@ -623,7 +560,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetLast(transfer, true);
 				fpgaDMATransferSetTransferCallback(transfer, NULL, NULL);
 			} else {
-				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
+				fpgaDMATransferSetTransferCallback(transfer, transferComplete, NULL);
 			}
 
 			res = fpgaDMATransfer(dma_h, transfer);
