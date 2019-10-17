@@ -35,7 +35,7 @@
 
 // Pattern generator slave port
 #define S2M_PATTERN_GENERATOR_MEMORY_SLAVE 0x2000
-#define S2M_PATTERN_GENERATOR_CSR  0x3010
+#define S2M_PATTERN_GENERATOR_CSR 0x3010
 
 // Single pattern is represented as 64Bytes
 #define PATTERN_WIDTH 64
@@ -76,43 +76,45 @@ Address 12 --> Bit 0 (generator operating) when set the generator is operational
 
 */
 typedef union {
-	uint32_t reg;
-	struct {
-		uint32_t reserved1:2;
-		uint32_t generate_sop:1;
-		uint32_t generate_eop:1;
-		uint32_t reserved2:4;
-		uint32_t last_tf_size:8;
-		uint32_t reserved3:15;
-		uint32_t go:1;
-	} ;
+  uint32_t reg;
+  struct {
+    uint32_t reserved1 : 2;
+    uint32_t generate_sop : 1;
+    uint32_t generate_eop : 1;
+    uint32_t reserved2 : 4;
+    uint32_t last_tf_size : 8;
+    uint32_t reserved3 : 15;
+    uint32_t go : 1;
+  };
 } pattern_gen_ctrl_t;
 
 typedef union {
-	uint32_t reg;
-	struct {
-		uint32_t busy:1;
-		uint32_t complete:1;
-		uint32_t irq:1;
-		uint32_t reserved:29;
-	} st;
+  uint32_t reg;
+  struct {
+    uint32_t busy : 1;
+    uint32_t complete : 1;
+    uint32_t irq : 1;
+    uint32_t reserved : 29;
+  } st;
 } pattern_gen_status_t;
 
 typedef struct __attribute__((__packed__)) {
-	//0x0
-	uint32_t payload_len;
-	//0x4
-	uint16_t pattern_len;
-	uint16_t pattern_pos;
-	//0x8
-	pattern_gen_ctrl_t control;
-	//0xC
-	pattern_gen_status_t status;
+  // 0x0
+  uint32_t payload_len;
+  // 0x4
+  uint16_t pattern_len;
+  uint16_t pattern_pos;
+  // 0x8
+  pattern_gen_ctrl_t control;
+  // 0xC
+  pattern_gen_status_t status;
 } pattern_gen_control_t;
 
 fpga_result populate_pattern_generator(fpga_handle fpga_h);
-fpga_result generator_copy_to_mmio(fpga_handle fpga_h, uint32_t *generator_ctrl_addr, int len);
-fpga_result start_generator(fpga_handle fpga_h, uint64_t transfer_len, int pkt_transfer);
+fpga_result generator_copy_to_mmio(fpga_handle fpga_h,
+                                   uint32_t *generator_ctrl_addr, int len);
+fpga_result start_generator(fpga_handle fpga_h, uint64_t transfer_len,
+                            int pkt_transfer);
 fpga_result wait_for_generator_complete(fpga_handle fpga_h);
 fpga_result stop_generator(fpga_handle fpga_h);
 #endif //__PATTERN_GENERATOR_H__
