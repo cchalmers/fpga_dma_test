@@ -382,7 +382,7 @@ out:
 	return res;
 }
 
-static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h, struct config *config) {
+static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_read_h, fpga_dma_handle_t dma_write_h, struct config *config) {
 	fpga_dma_transfer_t transfer;
 	fpga_dma_transfer_t transfer2;
 	fpga_result res = FPGA_OK;
@@ -452,7 +452,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
 			}
 
-			res = fpgaDMATransfer(dma_h, transfer);
+			res = fpgaDMATransfer(dma_write_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
 			total_size -= transfer_bytes;
 			src += transfer_bytes;
@@ -486,7 +486,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
 			}
 
-			res = fpgaDMATransfer(dma_h, transfer);
+			res = fpgaDMATransfer(dma_read_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
 			total_size -= transfer_bytes;
 			dst += transfer_bytes;
@@ -534,8 +534,8 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetTransferCallback(transfer2, transferNonBlocking, NULL);
 			}
 
-			res = fpgaDMATransfer(dma_h, transfer);
-			res = fpgaDMATransfer(dma_h, transfer2);
+			res = fpgaDMATransfer(dma_write_h, transfer);
+			res = fpgaDMATransfer(dma_read_h, transfer2);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
 			total_size -= transfer_bytes;
 			dst += transfer_bytes;
@@ -584,7 +584,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
 			}
 
-			res = fpgaDMATransfer(dma_h, transfer);
+			res = fpgaDMATransfer(dma_write_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
 			total_size -= transfer_bytes;
 			src += transfer_bytes;
@@ -629,7 +629,7 @@ static fpga_result non_loopback_test(fpga_handle afc_h, fpga_dma_handle_t dma_h,
 				fpgaDMATransferSetTransferCallback(transfer, transferNonBlocking, NULL);
 			}
 
-			res = fpgaDMATransfer(dma_h, transfer);
+			res = fpgaDMATransfer(dma_read_h, transfer);
 			ON_ERR_GOTO(res, free_transfer, "transfer error");
 			total_size -= transfer_bytes;
 			dst += transfer_bytes;
@@ -784,7 +784,8 @@ out:
 
 fpga_result do_action(struct config *config, fpga_token afc_tok)
 {
-	fpga_dma_handle_t dma_h = NULL;
+	fpga_dma_handle_t dma_read_h = NULL;
+	fpga_dma_handle_t dma_write_h = NULL;
 	fpga_dma_handle_t tx_dma_h = NULL;
 	fpga_dma_handle_t rx_dma_h = NULL;
 	fpga_handle afc_h = NULL;
@@ -822,30 +823,37 @@ fpga_result do_action(struct config *config, fpga_token afc_tok)
 	debug_print("found %ld dma channels\n", ch_count);
 
 	if(config->direction == DMA_MTOM) {
-		res = fpgaDMAOpen(afc_h, 0, &dma_h);
+		res = fpgaDMAOpen(afc_h, 0, &dma_read_h);
 		ON_ERR_GOTO(res, out_unmap, "fpgaDMAOpen");
-		debug_print("opened memory to memory channel\n");
+		debug_print("opened memory to memory read channel\n");
+
+		res = fpgaDMAOpen(afc_h, 1, &dma_write_h);
+		ON_ERR_GOTO(res, out_unmap, "fpgaDMAOpen");
+		debug_print("opened memory to memory write channel\n");
 
 		// Run test
-		res = non_loopback_test(afc_h, dma_h, config);
+		res = non_loopback_test(afc_h, dma_read_h, dma_write_h, config);
 		ON_ERR_GOTO(res, out_dma_close, "fpgaDMAOpen");
 		debug_print("non loopback test success\n");
 	} else {
 		if(config->loopback == DMA_LOOPBACK_OFF) {
 			if(config->direction == DMA_MTOS) {
 				// Memory to stream -> Channel 0
-				res = fpgaDMAOpen(afc_h, 0, &dma_h);
+				res = fpgaDMAOpen(afc_h, 0, &dma_read_h);
+				ON_ERR_GOTO(res, out_dma_close, "fpgaDMAOpen");
+				debug_print("opened memory to stream channel\n");
+				res = fpgaDMAOpen(afc_h, 1, &dma_write_h);
 				ON_ERR_GOTO(res, out_dma_close, "fpgaDMAOpen");
 				debug_print("opened memory to stream channel\n");
 			} else {
 				// Stream to memory -> Channel 1
-				res = fpgaDMAOpen(afc_h, 1, &dma_h);
+				res = fpgaDMAOpen(afc_h, 1, &dma_write_h);
 				ON_ERR_GOTO(res, out_dma_close, "fpgaDMAOpen");
 				debug_print("opened stream to memory channel\n");
 			}
 
 			// Run test
-			res = non_loopback_test(afc_h, dma_h, config);
+			res = non_loopback_test(afc_h, dma_read_h, dma_write_h, config);
 			ON_ERR_GOTO(res, out_dma_close, "fpgaDMAOpen");
 			debug_print("non loopback test success\n");
 		} else {
@@ -877,8 +885,13 @@ out_tx_close:
 	}
 
 out_dma_close:
-	if(dma_h) {
-		res = fpgaDMAClose(dma_h);
+	if(dma_read_h) {
+		res = fpgaDMAClose(dma_read_h);
+		ON_ERR_GOTO(res, out_unmap, "fpgaDMAOpen");
+		debug_print("closed dma channel\n");
+	}
+	if(dma_write_h) {
+		res = fpgaDMAClose(dma_write_h);
 		ON_ERR_GOTO(res, out_unmap, "fpgaDMAOpen");
 		debug_print("closed dma channel\n");
 	}
